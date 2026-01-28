@@ -203,15 +203,15 @@ for i, month in enumerate(months):
         st.markdown(f"**{month}**")
 
     with col_pl:
-        pl_str = st.text_input("P/L", key=f"pl_{i}", value="0", label_visibility="collapsed", placeholder="P/L")
+        pl_str = st.text_input("P/L", key=f"pl_{i}", value="", label_visibility="collapsed", placeholder="0")
         pl = parse_float(pl_str, 0.0)
 
     with col_contrib:
-        contrib_str = st.text_input("Contributions", key=f"contrib_{i}", value="0", label_visibility="collapsed", placeholder="Contributions")
+        contrib_str = st.text_input("Contributions", key=f"contrib_{i}", value="", label_visibility="collapsed", placeholder="0")
         contrib = parse_float(contrib_str, 0.0)
 
     with col_redemp:
-        redemp_str = st.text_input("Redemptions", key=f"redemp_{i}", value="0", label_visibility="collapsed", placeholder="Amount or 0")
+        redemp_str = st.text_input("Redemptions", key=f"redemp_{i}", value="", label_visibility="collapsed", placeholder="0")
         redemp = parse_float(redemp_str, 0.0)
 
     with col_full:
@@ -537,10 +537,15 @@ if st.button("🔄 Calculate Share Roll", type="primary", use_container_width=Tr
         with col4:
             st.metric("Ending Shares", f"{total_ending:,.4f}")
 
-        # Check figure - Total Ending NAV
+        # Check figures
         st.markdown("---")
         total_ending_nav = sum(s['total_nav'] for s in series_data.values() if s['shares'] > 0)
-        st.metric("Total Ending NAV (Check Figure)", f"${total_ending_nav:,.2f}")
+        total_year_pl = sum(md['pl'] for md in monthly_data)
+        col_check1, col_check2 = st.columns(2)
+        with col_check1:
+            st.metric("Total Ending NAV (Check Figure)", f"${total_ending_nav:,.2f}")
+        with col_check2:
+            st.metric("Total P/L for Year (Check Figure)", f"${total_year_pl:,.2f}")
 
         # Reconciliation check
         calculated_ending = total_beginning + total_transfers_in - total_transfers_out + total_contributions - total_redemptions
