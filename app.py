@@ -17,6 +17,11 @@ st.markdown("---")
 if 'num_series' not in st.session_state:
     st.session_state.num_series = 1
 
+for _i in range(12):
+    _key = f'num_multi_redemp_{_i}'
+    if _key not in st.session_state:
+        st.session_state[_key] = 2
+
 # Sidebar configuration
 st.sidebar.header("Configuration")
 
@@ -220,13 +225,53 @@ for i, month in enumerate(months):
     with col_series:
         available_series = get_available_series_up_to_month(i, prior_series_inputs, monthly_data, current_year)
         if (redemp > 0 or full_redemption) and available_series:
-            selected_series = st.selectbox("Series", options=available_series, key=f"redemp_series_{i}", label_visibility="collapsed")
+            series_options = available_series + ["Multiple Series"]
+            selected_series = st.selectbox("Series", options=series_options, key=f"redemp_series_{i}", label_visibility="collapsed")
         elif redemp > 0 or full_redemption:
             st.markdown("*No series*")
             selected_series = None
         else:
             st.markdown("—")
             selected_series = None
+
+    # Multi-series redemption sub-rows
+    multi_redemptions = []
+    if selected_series == "Multiple Series" and available_series:
+        num_rows = st.session_state[f'num_multi_redemp_{i}']
+
+        # +/- buttons for sub-rows
+        btn_col1, btn_col2, btn_spacer = st.columns([0.5, 0.5, 5])
+        with btn_col1:
+            if st.button("➕", key=f"add_multi_{i}", help="Add redemption row"):
+                st.session_state[f'num_multi_redemp_{i}'] += 1
+                st.rerun()
+        with btn_col2:
+            if st.button("➖", key=f"rem_multi_{i}", help="Remove redemption row") and num_rows > 1:
+                st.session_state[f'num_multi_redemp_{i}'] -= 1
+                st.rerun()
+
+        # Sub-row header
+        sr_spacer, sr_amt, sr_full, sr_series = st.columns([1.2, 1.2, 0.8, 1.8])
+        with sr_amt:
+            st.caption("Redemp $")
+        with sr_full:
+            st.caption("Full?")
+        with sr_series:
+            st.caption("From Series")
+
+        for j in range(num_rows):
+            sr_spacer, sr_amt, sr_full, sr_series = st.columns([1.2, 1.2, 0.8, 1.8])
+            with sr_spacer:
+                st.markdown(f"&nbsp;&nbsp;&nbsp;↳ Row {j+1}", unsafe_allow_html=True)
+            with sr_amt:
+                mr_amt_str = st.text_input("Amount", key=f"mr_amt_{i}_{j}", value="", label_visibility="collapsed", placeholder="0")
+                mr_amt = parse_float(mr_amt_str, 0.0)
+            with sr_full:
+                mr_full = st.checkbox("Full", key=f"mr_full_{i}_{j}")
+            with sr_series:
+                mr_series = st.selectbox("Series", options=available_series, key=f"mr_series_{i}_{j}", label_visibility="collapsed")
+            if mr_amt > 0 or mr_full:
+                multi_redemptions.append({'amount': mr_amt, 'series': mr_series, 'full': mr_full})
 
     monthly_data.append({
         'month': month,
@@ -235,7 +280,8 @@ for i, month in enumerate(months):
         'contributions': contrib,
         'redemptions': redemp,
         'redemption_series': selected_series,
-        'full_redemption': full_redemption
+        'full_redemption': full_redemption,
+        'multi_redemptions': multi_redemptions
     })
 
 st.markdown("---")
@@ -422,7 +468,43 @@ if st.button("🔄 Calculate Share Roll", type="primary", use_container_width=Tr
                     })
 
             # 3. Process redemption (AFTER P/L - at post-P/L NAV)
-            if (redemptions > 0 or full_redemption) and redemption_series and redemption_series in series_data:
+            multi_redemptions = month_info.get('multi_redemptions', [])
+
+            if multi_redemptions:
+                # Multi-series redemption mode
+                for mr in multi_redemptions:
+                    mr_series = mr['series']
+                    mr_amount = mr['amount']
+                    mr_full = mr['full']
+                    if mr_series and mr_series in series_data:
+                        s = series_data[mr_series]
+                        if s['nav_per_share'] > 0 and s['shares'] > 0:
+                            if mr_full:
+                                shares_redeemed = s['shares']
+                                redemption_amount = shares_redeemed * s['nav_per_share']
+                                calc_log.append({
+                                    'Step': 'Full Redemption (Multi)',
+                                    'Month': month,
+                                    'Series': mr_series,
+                                    'Description': f'FULL redemption of all shares',
+                                    'Details': f'NAV/share: ${s["nav_per_share"]:,.4f} | Shares redeemed: {shares_redeemed:,.4f} | Redemption value: ${redemption_amount:,.2f}'
+                                })
+                            else:
+                                shares_redeemed = mr_amount / s['nav_per_share']
+                                redemption_amount = mr_amount
+                                calc_log.append({
+                                    'Step': 'Redemption (Multi)',
+                                    'Month': month,
+                                    'Series': mr_series,
+                                    'Description': f'Redemption of ${mr_amount:,.2f}',
+                                    'Details': f'NAV/share: ${s["nav_per_share"]:,.4f} | Shares redeemed: ${mr_amount:,.2f} / ${s["nav_per_share"]:,.4f} = {shares_redeemed:,.4f} | Shares before: {s["shares"]:,.4f}'
+                                })
+
+                            s['redeemed_shares'] += shares_redeemed
+                            s['shares'] = s['shares'] - shares_redeemed
+                            s['total_nav'] = s['total_nav'] - redemption_amount
+
+            elif (redemptions > 0 or full_redemption) and redemption_series and redemption_series in series_data:
                 s = series_data[redemption_series]
                 if s['nav_per_share'] > 0 and s['shares'] > 0:
                     if full_redemption:
@@ -622,7 +704,26 @@ if st.button("🔄 Calculate Share Roll", type="primary", use_container_width=Tr
                         s['nav_per_share'] = s['total_nav'] / s['shares']
 
             # 3. Process redemption (after P/L)
-            if (redemptions > 0 or full_redemption) and redemption_series and redemption_series in temp_series:
+            multi_redemptions = month_info.get('multi_redemptions', [])
+
+            if multi_redemptions:
+                for mr in multi_redemptions:
+                    mr_series = mr['series']
+                    mr_amount = mr['amount']
+                    mr_full = mr['full']
+                    if mr_series and mr_series in temp_series:
+                        s = temp_series[mr_series]
+                        if s['nav_per_share'] > 0 and s['shares'] > 0:
+                            if mr_full:
+                                redemption_amount = s['shares'] * s['nav_per_share']
+                                s['total_nav'] -= redemption_amount
+                                s['shares'] = 0
+                            else:
+                                shares_red = mr_amount / s['nav_per_share']
+                                s['shares'] -= shares_red
+                                s['total_nav'] -= mr_amount
+
+            elif (redemptions > 0 or full_redemption) and redemption_series and redemption_series in temp_series:
                 s = temp_series[redemption_series]
                 if s['nav_per_share'] > 0 and s['shares'] > 0:
                     if full_redemption:
@@ -775,7 +876,8 @@ if st.button("🔄 Calculate Share Roll", type="primary", use_container_width=Tr
                 full_redemption = month_info['full_redemption']
 
                 # Skip months with no activity
-                if pl == 0 and contributions == 0 and redemptions == 0 and not full_redemption:
+                multi_redemptions = month_info.get('multi_redemptions', [])
+                if pl == 0 and contributions == 0 and redemptions == 0 and not full_redemption and not multi_redemptions:
                     continue
 
                 # Month header
@@ -847,7 +949,20 @@ if st.button("🔄 Calculate Share Roll", type="primary", use_container_width=Tr
                     calc_sheet.cell(row=srow, column=7, value=f'=D{srow}+F{srow}').number_format = currency_format
 
                     # Redemption
-                    if (redemptions > 0 or full_redemption) and redemption_series == sname:
+                    multi_redemptions = month_info.get('multi_redemptions', [])
+                    if multi_redemptions:
+                        # Find all multi-redemptions targeting this series
+                        series_mrs = [mr for mr in multi_redemptions if mr['series'] == sname]
+                        if series_mrs:
+                            has_full = any(mr['full'] for mr in series_mrs)
+                            if has_full:
+                                calc_sheet.cell(row=srow, column=8, value=f'=-G{srow}').number_format = currency_format
+                            else:
+                                total_mr_amount = sum(mr['amount'] for mr in series_mrs)
+                                calc_sheet.cell(row=srow, column=8, value=-total_mr_amount).number_format = currency_format
+                        else:
+                            calc_sheet.cell(row=srow, column=8, value=0).number_format = currency_format
+                    elif (redemptions > 0 or full_redemption) and redemption_series == sname:
                         if full_redemption:
                             calc_sheet.cell(row=srow, column=8, value=f'=-G{srow}').number_format = currency_format
                         else:
@@ -888,7 +1003,20 @@ if st.button("🔄 Calculate Share Roll", type="primary", use_container_width=Tr
             })
 
             prior_inputs = pd.DataFrame(valid_prior_series)
-            monthly_inputs = pd.DataFrame(monthly_data)
+            monthly_inputs_data = []
+            for md in monthly_data:
+                md_copy = dict(md)
+                mrs = md_copy.get('multi_redemptions', [])
+                if mrs:
+                    parts = []
+                    for mr in mrs:
+                        amt_str = 'FULL' if mr['full'] else '${:,.2f}'.format(mr['amount'])
+                        parts.append('{}: {}'.format(mr['series'], amt_str))
+                    md_copy['multi_redemptions'] = '; '.join(parts)
+                else:
+                    md_copy['multi_redemptions'] = ''
+                monthly_inputs_data.append(md_copy)
+            monthly_inputs = pd.DataFrame(monthly_inputs_data)
 
             inputs_df.to_excel(writer, index=False, sheet_name='Inputs', startrow=0)
             prior_inputs.to_excel(writer, index=False, sheet_name='Inputs', startrow=5)
